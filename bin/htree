@@ -9,6 +9,7 @@
   htree edit <doc> <id> [--label L] [--note N] [--status S] [--collapsed true|false]
   htree rm <doc> <id>
   htree mv <doc> <id> <new-parent> [--index I]
+  htree dir <doc> LR|TD                  レイアウト方向(mermaid の flowchart LR / TD)
   htree json <doc>                       生の JSON を出力
   htree open <doc>                       herdr の右側に Mod ペインとして表示
   htree rmdoc <doc>
@@ -117,7 +118,8 @@ def main():
     p = sub.add_parser("add"); p.add_argument("doc"); p.add_argument("parent"); p.add_argument("label")
     p.add_argument("--note"); p.add_argument("--status"); p.add_argument("--id"); p.add_argument("--index", type=int)
     p = sub.add_parser("edit"); p.add_argument("doc"); p.add_argument("id")
-    p.add_argument("--label"); p.add_argument("--note"); p.add_argument("--status"); p.add_argument("--collapsed")
+    p.add_argument("--label"); p.add_argument("--note"); p.add_argument("--status"); p.add_argument("--collapsed"); p.add_argument("--shape")
+    p = sub.add_parser("dir"); p.add_argument("doc"); p.add_argument("direction", choices=["LR", "TD"])
     p = sub.add_parser("rm"); p.add_argument("doc"); p.add_argument("id")
     p = sub.add_parser("mv"); p.add_argument("doc"); p.add_argument("id"); p.add_argument("parent"); p.add_argument("--index", type=int)
     a = ap.parse_args()
@@ -154,8 +156,14 @@ def main():
             if v is not None:
                 if v == "" and k != "label": n.pop(k, None)
                 else: n[k] = v
+        if a.shape is not None:
+            if a.shape not in ("", "rect", "round", "stadium"): sys.exit("shape は rect / round / stadium")
+            if a.shape: n["shape"] = a.shape
+            else: n.pop("shape", None)
         if a.collapsed is not None: n["collapsed"] = a.collapsed.lower() == "true"
         save(a.doc, d); print("ok")
+    elif a.cmd == "dir":
+        d = load(a.doc); d["direction"] = a.direction; save(a.doc, d); print("ok")
     elif a.cmd == "rm":
         d = load(a.doc); n, p = find(d, a.id)
         if p is None: sys.exit("root は消せません (htree rmdoc)")

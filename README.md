@@ -22,3 +22,9 @@
 
 status: todo / doing / done / blocked / idle(任意)。`root` は最上位ノードの別名。
 JSON を直接書いてもよい: `{"title": "...", "root": {"id": "n1", "label": "...", "note"?, "status"?, "collapsed"?, "children"?: [...]}}`
+
+## mermaid 風の描画
+
+- 方向: 文書の `"direction": "LR"`(既定, 左→右) または `"TD"`(上→下)。`htree dir <doc> TD`
+- エッジ: 曲線 + 矢じり(親→子)
+- 形: ノードの `"shape"`: `rect` / `round`(既定) / `stadium`。`htree edit <doc> <id> --shape stadium`

@@ -69,57 +69,69 @@ export default class TreeCanvas extends View {
     return w;
   }
 
-  // 左→右の木レイアウト(mermaid の flowchart LR 風): 葉に縦の段を割り当て、親は子の中央。
-  layout(root) {
-    const GAP_X = 64, GAP_Y = 14, PAD = 24;
-    const nodes = [], edges = [];
+  // mermaid の flowchart 風の木レイアウト。doc.direction: "LR"(既定) | "TD"。
+  // 葉に段を割り当て、親は子の中央。LR は段=縦、TD は段=横。
+  layout(root, dir) {
+    const TD = dir === "TD";
+    const GAP_MAIN = TD ? 48 : 64, GAP_CROSS = TD ? 20 : 14, PAD = 24;
+    const size = (n) => {
+      const w = Math.min(280, Math.max(96, this.textW(n.label ?? n.id, 13) + 44, n.note ? this.textW(n.note, 11) + 44 : 0));
+      return { w, h: n.note ? 46 : 34 };
+    };
     let cursor = PAD;
     const build = (n, depth) => {
-      const hasNote = !!n.note;
-      const w = Math.min(280, Math.max(96, this.textW(n.label ?? n.id, 13) + 44,
-        hasNote ? this.textW(n.note, 11) + 44 : 0));
-      const h = hasNote ? 46 : 34;
+      const { w, h } = size(n);
       const kids = this.isOpen(n) ? (n.children ?? []) : [];
       const ch = kids.map((c) => build(c, depth + 1));
-      let cy;
-      if (ch.length) cy = (ch[0].y + ch[0].h / 2 + ch[ch.length - 1].y + ch[ch.length - 1].h / 2) / 2;
-      else { cy = cursor + h / 2; cursor += h + GAP_Y; }
-      const box = { n, depth, w, h, y: cy - h / 2, x: 0, kids: ch };
-      return box;
+      const cross = TD ? w : h; // 段方向の長さ
+      let mid;
+      if (ch.length) mid = (ch[0].mid + ch[ch.length - 1].mid) / 2;
+      else { mid = cursor + cross / 2; cursor += cross + GAP_CROSS; }
+      return { n, depth, w, h, mid, x: 0, y: 0, kids: ch };
     };
     const top = build(root, 0);
-    // 深さごとの最大幅から x を決める
-    const maxW = [];
-    const scan = (b) => { maxW[b.depth] = Math.max(maxW[b.depth] ?? 0, b.w); b.kids.forEach(scan); };
+    const extent = []; // 深さごとの主軸方向の最大長
+    const scan = (b) => { extent[b.depth] = Math.max(extent[b.depth] ?? 0, TD ? b.h : b.w); b.kids.forEach(scan); };
     scan(top);
-    const xs = [PAD];
-    for (let d = 1; d < maxW.length; d++) xs[d] = xs[d - 1] + maxW[d - 1] + GAP_X;
+    const pos = [PAD];
+    for (let d = 1; d < extent.length; d++) pos[d] = pos[d - 1] + extent[d - 1] + GAP_MAIN;
+    const nodes = [], edges = [];
     let W = PAD, H = PAD;
     const place = (b) => {
-      b.x = xs[b.depth];
+      if (TD) { b.x = b.mid - b.w / 2; b.y = pos[b.depth]; }
+      else { b.x = pos[b.depth]; b.y = b.mid - b.h / 2; }
       nodes.push(b);
-      W = Math.max(W, b.x + b.w + PAD);
-      H = Math.max(H, b.y + b.h + PAD);
+      W = Math.max(W, b.x + b.w + PAD); H = Math.max(H, b.y + b.h + PAD);
       for (const k of b.kids) { edges.push([b, k]); place(k); }
     };
     place(top);
-    return { nodes, edges, W, H };
+    return { nodes, edges, W, H, TD };
   }
 
-  graph(root, t) {
-    const { nodes, edges, W, H } = this.layout(root);
-    const pb = PathBuilder.stroke(1.5);
+  graph(root, t, dir) {
+    const { nodes, edges, W, H, TD } = this.layout(root, dir);
+    const line = PathBuilder.stroke(1.5), arrows = PathBuilder.fill();
+    const AL = 9, AW = 4; // 矢じりの長さ・半幅
     for (const [a, b] of edges) {
-      const x1 = a.x + a.w, y1 = a.y + a.h / 2, x2 = b.x, y2 = b.y + b.h / 2, mx = (x1 + x2) / 2;
-      pb.move_to(x1, y1).cubic_bezier_to(x2, y2, mx, y1, mx, y2);
+      if (TD) {
+        const x1 = a.x + a.w / 2, y1 = a.y + a.h, x2 = b.x + b.w / 2, y2 = b.y, my = (y1 + y2) / 2;
+        line.move_to(x1, y1).cubic_bezier_to(x2, y2 - AL, x1, my, x2, my);
+        arrows.add_polygon([[x2, y2], [x2 - AW, y2 - AL], [x2 + AW, y2 - AL]], true);
+      } else {
+        const x1 = a.x + a.w, y1 = a.y + a.h / 2, x2 = b.x, y2 = b.y + b.h / 2, mx = (x1 + x2) / 2;
+        line.move_to(x1, y1).cubic_bezier_to(x2 - AL, y2, mx, y1, mx, y2);
+        arrows.add_polygon([[x2, y2], [x2 - AL, y2 - AW], [x2 - AL, y2 + AW]], true);
+      }
     }
-    const layer = window.paint_path(pb.build(), t.dim).absolute().top(0).left(0).w(W).h(H);
+    const layer = div().absolute().top(0).left(0).w(W).h(H)
+      .child(window.paint_path(line.build(), t.dim).absolute().top(0).left(0).w(W).h(H))
+      .child(window.paint_path(arrows.build(), t.dim).absolute().top(0).left(0).w(W).h(H));
     const boxes = nodes.map((b) => {
       const n = b.n, kids = n.children ?? [];
       const col = n.status ? (t[STATUS[n.status] ?? "unknown"] ?? t.unknown) : null;
       const isRoot = b.depth === 0;
       return div().id(`g-${n.id}`).absolute().left(b.x).top(b.y).w(b.w).h(b.h)
-        .rounded(8).border(1).border_color(col ?? (isRoot ? t.accent : t.border))
+        .rounded(n.shape === "rect" ? 2 : n.shape === "stadium" ? b.h / 2 : 8).border(1).border_color(col ?? (isRoot ? t.accent : t.border))
         .bg(isRoot ? t.selected : t.raised)
         .hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => { if (kids.length) { this.open[n.id] = !this.isOpen(n); cx.notify(); } })
@@ -154,7 +166,7 @@ export default class TreeCanvas extends View {
     const body = this.error
       ? div().p(12).text_size(12).text_color(t.blocked).child(this.error)
       : root
-        ? this.graph(root, t)
+        ? this.graph(root, t, this.data?.direction)
         : div().p(12).text_size(12).text_color(t.muted)
             .child(this.docs.length ? "文書を選んでください" : "文書がありません。`htree put <name>` で作ります。");
     const kids = [tabs];
