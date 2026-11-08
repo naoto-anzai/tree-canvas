@@ -1,1 +1,1 @@
-{ "place": "none", "title": "Tree Canvas", "focusable": false }
+{ "place": "none", "title": "Tree Canvas", "overlay": { "kind": "dialog", "width": 1000, "height": 0.85 } }

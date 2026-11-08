@@ -1,7 +1,7 @@
 // tree-canvas: エージェントが書いた木構造(~/.herdr/trees/<doc>.json)を GUI で描画する。
 // 編集はエージェント側(htree CLI か JSON を直接編集)。このモジュールは見る専用 + 折りたたみ/選択。
 // props: { doc?: string }  省略時は先頭の文書。
-import { View, div } from "gpui-kit";
+import { View, div, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { props, home, exec, readTextFile, watchFolder, theme } from "herdr";
 
@@ -58,38 +58,84 @@ export default class TreeCanvas extends View {
     for (const c of node.children ?? []) this.setAll(c, v);
   }
 
-  row(n, depth, t, trail) {
-    const kids = n.children ?? [];
-    const open = this.isOpen(n);
-    const sel = this.selected === n.id;
-    const color = n.status ? (t[STATUS[n.status] ?? "unknown"] ?? t.unknown) : t.dim;
-    const line = h_flex().id(`n-${n.id}`).w_full().items_center().gap(6).h(26).pr(8).rounded(5)
-      .bg(sel ? t.selected : t.surface)
-      .hover((s) => s.bg(t.raised))
-      .on_click((_e, cx) => { this.selected = this.selected === n.id ? null : n.id; cx.notify(); })
-      .child(div().w(depth * 16 + 6).h(26).flex_none())
-      .child(
-        div().id(`c-${n.id}`).w(16).flex_none().text_size(11).text_color(t.muted)
-          .on_click((_e, cx) => { cx.stop_propagation(); this.open[n.id] = !open; cx.notify(); })
-          .child(kids.length ? (open ? "▾" : "▸") : "")
-      )
-      .child(div().w(8).h(8).flex_none().rounded(4).bg(color))
-      .child(div().flex_1().truncate().text_size(13).text_color(t.foreground).child(n.label ?? n.id))
-      .when(!!n.note && !sel, (el) => el.child(div().max_w(260).truncate().text_size(11).text_color(t.dim).child(n.note)))
-      .when(kids.length > 0 && !open, (el) => el.child(div().text_size(11).text_color(t.dim).child(`+${this.count(n) - 1}`)));
-    const out = [line];
-    if (sel && n.note) {
-      out.push(
-        h_flex().items_start().child(div().w(depth * 16 + 36).flex_none())
-          .child(div().flex_1().py(4).text_size(12).text_color(t.muted).child(n.note))
-      );
-    }
-    if (open) for (const c of kids) out.push(...this.row(c, depth + 1, t));
-    return out;
-  }
-
   count(n) {
     return 1 + (n.children ?? []).reduce((a, c) => a + this.count(c), 0);
+  }
+
+  // 文字幅の見積もり(全角 ≒ size、半角 ≒ 0.56*size)
+  textW(str, size) {
+    let w = 0;
+    for (const ch of String(str ?? "")) w += ch.charCodeAt(0) > 255 ? size : size * 0.56;
+    return w;
+  }
+
+  // 左→右の木レイアウト(mermaid の flowchart LR 風): 葉に縦の段を割り当て、親は子の中央。
+  layout(root) {
+    const GAP_X = 64, GAP_Y = 14, PAD = 24;
+    const nodes = [], edges = [];
+    let cursor = PAD;
+    const build = (n, depth) => {
+      const hasNote = !!n.note;
+      const w = Math.min(280, Math.max(96, this.textW(n.label ?? n.id, 13) + 44,
+        hasNote ? this.textW(n.note, 11) + 44 : 0));
+      const h = hasNote ? 46 : 34;
+      const kids = this.isOpen(n) ? (n.children ?? []) : [];
+      const ch = kids.map((c) => build(c, depth + 1));
+      let cy;
+      if (ch.length) cy = (ch[0].y + ch[0].h / 2 + ch[ch.length - 1].y + ch[ch.length - 1].h / 2) / 2;
+      else { cy = cursor + h / 2; cursor += h + GAP_Y; }
+      const box = { n, depth, w, h, y: cy - h / 2, x: 0, kids: ch };
+      return box;
+    };
+    const top = build(root, 0);
+    // 深さごとの最大幅から x を決める
+    const maxW = [];
+    const scan = (b) => { maxW[b.depth] = Math.max(maxW[b.depth] ?? 0, b.w); b.kids.forEach(scan); };
+    scan(top);
+    const xs = [PAD];
+    for (let d = 1; d < maxW.length; d++) xs[d] = xs[d - 1] + maxW[d - 1] + GAP_X;
+    let W = PAD, H = PAD;
+    const place = (b) => {
+      b.x = xs[b.depth];
+      nodes.push(b);
+      W = Math.max(W, b.x + b.w + PAD);
+      H = Math.max(H, b.y + b.h + PAD);
+      for (const k of b.kids) { edges.push([b, k]); place(k); }
+    };
+    place(top);
+    return { nodes, edges, W, H };
+  }
+
+  graph(root, t) {
+    const { nodes, edges, W, H } = this.layout(root);
+    const pb = PathBuilder.stroke(1.5);
+    for (const [a, b] of edges) {
+      const x1 = a.x + a.w, y1 = a.y + a.h / 2, x2 = b.x, y2 = b.y + b.h / 2, mx = (x1 + x2) / 2;
+      pb.move_to(x1, y1).cubic_bezier_to(x2, y2, mx, y1, mx, y2);
+    }
+    const layer = window.paint_path(pb.build(), t.dim).absolute().top(0).left(0).w(W).h(H);
+    const boxes = nodes.map((b) => {
+      const n = b.n, kids = n.children ?? [];
+      const col = n.status ? (t[STATUS[n.status] ?? "unknown"] ?? t.unknown) : null;
+      const isRoot = b.depth === 0;
+      return div().id(`g-${n.id}`).absolute().left(b.x).top(b.y).w(b.w).h(b.h)
+        .rounded(8).border(1).border_color(col ?? (isRoot ? t.accent : t.border))
+        .bg(isRoot ? t.selected : t.raised)
+        .hover((s) => s.bg(t.hover))
+        .on_click((_e, cx) => { if (kids.length) { this.open[n.id] = !this.isOpen(n); cx.notify(); } })
+        .child(
+          h_flex().size_full().items_center().gap(8).px(12)
+            .when(!!col, (el) => el.child(div().w(8).h(8).flex_none().rounded(4).bg(col)))
+            .child(
+              v_flex().flex_1().min_w(0).justify_center()
+                .child(div().truncate().text_size(13).text_color(t.foreground).child(n.label ?? n.id))
+                .when(!!n.note, (el) => el.child(div().truncate().text_size(11).text_color(t.dim).child(n.note)))
+            )
+            .when(kids.length > 0 && !this.isOpen(n), (el) =>
+              el.child(div().flex_none().px(5).rounded(8).bg(t.hover).text_size(11).text_color(t.muted).child(`+${this.count(n) - 1}`)))
+        );
+    });
+    return div().relative().w(W).h(H).flex_none().child(layer).children(boxes);
   }
 
   render(cx) {
@@ -100,7 +146,7 @@ export default class TreeCanvas extends View {
           .bg(d === this.name ? t.selected : t.surface)
           .text_color(d === this.name ? t.foreground : t.muted)
           .hover((s) => s.bg(t.raised))
-          .on_click((_e, cx) => { this.name = d; this.selected = null; this.open = {}; this.reload(cx); })
+          .on_click((_e, cx) => { this.name = d; this.open = {}; this.reload(cx); })
           .child(d)
       )
     );
@@ -108,7 +154,7 @@ export default class TreeCanvas extends View {
     const body = this.error
       ? div().p(12).text_size(12).text_color(t.blocked).child(this.error)
       : root
-        ? v_flex().id("tc-body").w_full().p(8).gap(1).children(this.row(root, 0, t))
+        ? this.graph(root, t)
         : div().p(12).text_size(12).text_color(t.muted)
             .child(this.docs.length ? "文書を選んでください" : "文書がありません。`htree put <name>` で作ります。");
     const kids = [tabs];
@@ -123,7 +169,10 @@ export default class TreeCanvas extends View {
           )
       );
     }
-    kids.push(v_flex().id("tc-scroll").flex_1().min_h(0).w_full().overflow_y_scrollbar().child(body));
+    kids.push(
+      v_flex().id("tc-v").flex_1().min_h(0).w_full().overflow_y_scrollbar()
+        .child(h_flex().id("tc-h").w_full().items_start().overflow_x_scrollbar().child(body))
+    );
     return v_flex().id("tc-root").size_full().min_h(0).bg(t.surface).children(kids);
   }
 }

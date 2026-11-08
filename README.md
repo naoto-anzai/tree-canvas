@@ -1,6 +1,6 @@
 # tree-canvas
 
-エージェントが成果物を「木構造」で描くための Herdr Mod。木は JSON ファイルが正で、Mod は保存を検知して GUI で描画する(折りたたみ・選択でノート表示・status の色点)。
+エージェントが成果物を「木構造」で描くための Herdr Mod。木は JSON ファイルが正で、Mod は保存を検知して GUI で描画する(mermaid の flowchart LR 風: 箱+曲線エッジ、クリックで子を折りたたみ、status の色枠、ノートは箱の2行目。編集 UI は未実装)。
 
 - 文書: `~/.herdr/trees/<doc>.json`
 - 編集 CLI: `bin/htree`(`~/.local/bin/htree` に symlink)
