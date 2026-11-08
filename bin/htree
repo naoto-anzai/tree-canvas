@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""htree: tree-canvas Mod の木構造文書を、エージェントが編集する CLI。
+文書は ~/.herdr/trees/<doc>.json。Mod は保存を検知して即描画する。
+
+  htree ls
+  htree show <doc>                       ASCII で表示(id 付き)
+  htree put <doc> [--title T] [-f FILE]  インデント付き箇条書きを stdin/FILE から丸ごと作成
+  htree add <doc> <parent|root> <label> [--note N] [--status S] [--id ID] [--index I]
+  htree edit <doc> <id> [--label L] [--note N] [--status S] [--collapsed true|false]
+  htree rm <doc> <id>
+  htree mv <doc> <id> <new-parent> [--index I]
+  htree json <doc>                       生の JSON を出力
+  htree open <doc>                       herdr の右側に Mod ペインとして表示
+  htree rmdoc <doc>
+
+put の書式(2 空白でインデント):
+  - [done] ラベル :: 注記
+  - [doing] 子ノード
+status: todo / doing / done / blocked / idle (省略可)
+"""
+import argparse, json, os, re, subprocess, sys, tempfile
+
+DIR = os.path.expanduser(os.environ.get("HTREE_DIR", "~/.herdr/trees"))
+STATUSES = {"todo", "doing", "done", "blocked", "idle"}
+
+def path(doc):
+    if not re.fullmatch(r"[\w.\-]+", doc):
+        sys.exit(f"文書名が不正です: {doc}")
+    return os.path.join(DIR, doc + ".json")
+
+def load(doc):
+    try:
+        return json.load(open(path(doc)))
+    except FileNotFoundError:
+        sys.exit(f"文書がありません: {doc} (htree put {doc} で作成)")
+
+def save(doc, data):
+    os.makedirs(DIR, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=DIR, suffix=".tmp")
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path(doc))  # 原子的に置換 (Mod の監視は *.json のみ見る)
+
+def walk(node, parent=None):
+    yield node, parent
+    for c in node.get("children", []):
+        yield from walk(c, node)
+
+def ids(data):
+    return {n["id"] for n, _ in walk(data["root"])}
+
+def new_id(data):
+    used, i = ids(data), 1
+    while f"n{i}" in used:
+        i += 1
+    return f"n{i}"
+
+def find(data, id_):
+    if id_ == "root":
+        return data["root"], None
+    for n, p in walk(data["root"]):
+        if n["id"] == id_:
+            return n, p
+    sys.exit(f"ノードがありません: {id_}")
+
+def check_status(s):
+    if s and s not in STATUSES:
+        sys.exit(f"status は {sorted(STATUSES)} のいずれか: {s}")
+
+LINE = re.compile(r"^(?P<ind>\s*)[-*]\s+(?:\[(?P<st>\w+)\]\s+)?(?P<label>.*?)(?:\s+::\s+(?P<note>.*))?$")
+
+def parse_outline(text):
+    stack, roots, n = [], [], 0
+    for raw in text.splitlines():
+        if not raw.strip():
+            continue
+        m = LINE.match(raw.replace("\t", "  "))
+        if not m:
+            sys.exit(f"行を解釈できません: {raw!r}")
+        n += 1
+        node = {"id": f"n{n}", "label": m["label"].strip()}
+        if m["st"]:
+            check_status(m["st"]); node["status"] = m["st"]
+        if m["note"]:
+            node["note"] = m["note"].strip()
+        depth = len(m["ind"]) // 2
+        while len(stack) > depth:
+            stack.pop()
+        if stack:
+            stack[-1].setdefault("children", []).append(node)
+        else:
+            roots.append(node)
+        stack.append(node)
+    if not roots:
+        sys.exit("入力が空です")
+    if len(roots) == 1:
+        return roots[0]
+    return {"id": "n0", "label": "root", "children": roots}
+
+def render(node, prefix="", last=True, top=True):
+    st = f"[{node['status']}] " if node.get("status") else ""
+    note = f"  :: {node['note']}" if node.get("note") else ""
+    line = f"{st}{node.get('label', '')}{note}  ({node['id']})"
+    out = [line if top else prefix + ("└─ " if last else "├─ ") + line]
+    kids = node.get("children", [])
+    for i, c in enumerate(kids):
+        out += render(c, "" if top else prefix + ("   " if last else "│  "), i == len(kids) - 1, False)
+    return out
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("ls")
+    for c in ("show", "json", "open", "rmdoc"):
+        sub.add_parser(c).add_argument("doc")
+    p = sub.add_parser("put"); p.add_argument("doc"); p.add_argument("--title"); p.add_argument("-f", "--file")
+    p = sub.add_parser("add"); p.add_argument("doc"); p.add_argument("parent"); p.add_argument("label")
+    p.add_argument("--note"); p.add_argument("--status"); p.add_argument("--id"); p.add_argument("--index", type=int)
+    p = sub.add_parser("edit"); p.add_argument("doc"); p.add_argument("id")
+    p.add_argument("--label"); p.add_argument("--note"); p.add_argument("--status"); p.add_argument("--collapsed")
+    p = sub.add_parser("rm"); p.add_argument("doc"); p.add_argument("id")
+    p = sub.add_parser("mv"); p.add_argument("doc"); p.add_argument("id"); p.add_argument("parent"); p.add_argument("--index", type=int)
+    a = ap.parse_args()
+
+    if a.cmd == "ls":
+        for f in sorted(os.listdir(DIR)) if os.path.isdir(DIR) else []:
+            if f.endswith(".json"):
+                print(f[:-5])
+    elif a.cmd == "show":
+        d = load(a.doc)
+        if d.get("title"): print(d["title"])
+        print("\n".join(render(d["root"])))
+    elif a.cmd == "json":
+        print(json.dumps(load(a.doc), ensure_ascii=False, indent=2))
+    elif a.cmd == "put":
+        text = open(a.file).read() if a.file else sys.stdin.read()
+        root = parse_outline(text)
+        save(a.doc, {"title": a.title or a.doc, "root": root})
+        print(f"saved {a.doc} ({sum(1 for _ in walk(root))} nodes)")
+    elif a.cmd == "add":
+        d = load(a.doc); parent, _ = find(d, a.parent); check_status(a.status)
+        nid = a.id or new_id(d)
+        if nid in ids(d): sys.exit(f"id が重複: {nid}")
+        node = {"id": nid, "label": a.label}
+        if a.note: node["note"] = a.note
+        if a.status: node["status"] = a.status
+        kids = parent.setdefault("children", [])
+        kids.insert(len(kids) if a.index is None else a.index, node)
+        save(a.doc, d); print(nid)
+    elif a.cmd == "edit":
+        d = load(a.doc); n, _ = find(d, a.id); check_status(a.status)
+        for k in ("label", "note", "status"):
+            v = getattr(a, k)
+            if v is not None:
+                if v == "" and k != "label": n.pop(k, None)
+                else: n[k] = v
+        if a.collapsed is not None: n["collapsed"] = a.collapsed.lower() == "true"
+        save(a.doc, d); print("ok")
+    elif a.cmd == "rm":
+        d = load(a.doc); n, p = find(d, a.id)
+        if p is None: sys.exit("root は消せません (htree rmdoc)")
+        p["children"].remove(n)
+        if not p["children"]: del p["children"]
+        save(a.doc, d); print("ok")
+    elif a.cmd == "mv":
+        d = load(a.doc); n, p = find(d, a.id); dest, _ = find(d, a.parent)
+        if p is None: sys.exit("root は動かせません")
+        if any(x is dest for x, _ in walk(n)): sys.exit("自分の子孫には移せません")
+        p["children"].remove(n)
+        if not p["children"]: del p["children"]
+        kids = dest.setdefault("children", [])
+        kids.insert(len(kids) if a.index is None else a.index, n)
+        save(a.doc, d); print("ok")
+    elif a.cmd == "rmdoc":
+        os.remove(path(a.doc)); print("ok")
+    elif a.cmd == "open":
+        load(a.doc)
+        r = subprocess.run(["herdr-app", "do", "pane.split", "--direction", "right", "--mod", "tree-canvas",
+                            "--props", json.dumps({"doc": a.doc})], capture_output=True, text=True)
+        print(r.stdout.strip() or r.stderr.strip()); sys.exit(r.returncode)
+
+main()
