@@ -2,6 +2,8 @@
 """htree: tree-canvas Mod の木構造文書を、エージェントが編集する CLI。
 文書は ~/.herdr/trees/<doc>.json。Mod は保存を検知して即描画する。
 
+  htree where                            いま使う置き場所を表示
+  htree init                             このプロジェクト(git ルート)に .herdr/trees/ を作る
   htree ls
   htree show <doc>                       ASCII で表示(id 付き)
   htree put <doc> [--title T] [-f FILE]  インデント付き箇条書きを stdin/FILE から丸ごと作成
@@ -14,6 +16,9 @@
   htree open <doc>                       herdr の右側に Mod ペインとして表示
   htree rmdoc <doc>
 
+置き場所: HTREE_DIR > 上のフォルダにある .herdr/trees/ > ~/.herdr/trees/ 。
+  -g (全コマンドの前に付ける) で共通の ~/.herdr/trees/ を強制する。
+
 put の書式(2 空白でインデント):
   - [done] ラベル :: 注記
   - [doing] 子ノード
@@ -21,7 +26,33 @@ status: todo / doing / done / blocked / idle (省略可)
 """
 import argparse, json, os, re, subprocess, sys, tempfile
 
-DIR = os.path.expanduser(os.environ.get("HTREE_DIR", "~/.herdr/trees"))
+GLOBAL_DIR = os.path.expanduser("~/.herdr/trees")
+DIR = GLOBAL_DIR  # main() が決め直す
+
+def project_root(start):
+    """start から上へ、.herdr/trees を持つ最初のフォルダ。なければ None。"""
+    d = os.path.abspath(start)
+    while True:
+        if os.path.isdir(os.path.join(d, ".herdr", "trees")):
+            return d
+        if os.path.dirname(d) == d:
+            return None
+        d = os.path.dirname(d)
+
+def git_root(start):
+    r = subprocess.run(["git", "-C", start, "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else os.path.abspath(start)
+
+def resolve_dir(use_global):
+    """置き場所の優先順: HTREE_DIR > (-g なら共通) > 上方の .herdr/trees > 共通。"""
+    env = os.environ.get("HTREE_DIR")
+    if env:
+        return os.path.expanduser(env)
+    if not use_global:
+        root = project_root(os.getcwd())
+        if root:
+            return os.path.join(root, ".herdr", "trees")
+    return GLOBAL_DIR
 STATUSES = {"todo", "doing", "done", "blocked", "idle"}
 
 def path(doc):
@@ -110,8 +141,9 @@ def render(node, prefix="", last=True, top=True):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("-g", "--global", dest="glob", action="store_true", help="共通の ~/.herdr/trees を使う")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("ls")
+    sub.add_parser("ls"); sub.add_parser("where"); sub.add_parser("init")
     for c in ("show", "json", "open", "rmdoc"):
         sub.add_parser(c).add_argument("doc")
     p = sub.add_parser("put"); p.add_argument("doc"); p.add_argument("--title"); p.add_argument("-f", "--file")
@@ -123,6 +155,13 @@ def main():
     p = sub.add_parser("rm"); p.add_argument("doc"); p.add_argument("id")
     p = sub.add_parser("mv"); p.add_argument("doc"); p.add_argument("id"); p.add_argument("parent"); p.add_argument("--index", type=int)
     a = ap.parse_args()
+    global DIR
+    if a.cmd == "init":
+        DIR = os.path.join(git_root(os.getcwd()), ".herdr", "trees")
+        os.makedirs(DIR, exist_ok=True); print(DIR); return
+    DIR = resolve_dir(a.glob)
+    if a.cmd == "where":
+        print(DIR); return
 
     if a.cmd == "ls":
         for f in sorted(os.listdir(DIR)) if os.path.isdir(DIR) else []:
@@ -183,8 +222,13 @@ def main():
         os.remove(path(a.doc)); print("ok")
     elif a.cmd == "open":
         load(a.doc)
+        props = {"doc": a.doc}
+        if DIR != GLOBAL_DIR and DIR.endswith(os.path.join(".herdr", "trees")):
+            props["folder"] = os.path.dirname(os.path.dirname(DIR))
+        elif DIR != GLOBAL_DIR:
+            props["file"] = path(a.doc)
         r = subprocess.run(["herdr-app", "do", "pane.split", "--direction", "right", "--mod", "tree-canvas",
-                            "--props", json.dumps({"doc": a.doc})], capture_output=True, text=True)
+                            "--props", json.dumps(props)], capture_output=True, text=True)
         print(r.stdout.strip() or r.stderr.strip()); sys.exit(r.returncode)
 
 main()

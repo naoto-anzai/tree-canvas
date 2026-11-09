@@ -1,3 +1,6 @@
 gpui-kit.d.ts
 jsconfig.json
 node_modules/
+.claude/settings.local.json
+*.png
+reload-trigger

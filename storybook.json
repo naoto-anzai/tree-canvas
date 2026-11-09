@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "props": {},
+  "states": [
+    {
+      "key": "tree",
+      "label": "木の内容",
+      "about": "文書の中身のパターン。memo タブも一緒に出る",
+      "kind": "radio",
+      "options": [
+        { "value": "none", "label": "文書なし(空)" },
+        { "value": "few", "label": "少数(6 ノード)" },
+        { "value": "many", "label": "多数(約 50 ノード)" },
+        { "value": "status", "label": "全 status(blocked 含む)" },
+        { "value": "long", "label": "長い名前・長いノート" },
+        { "value": "broken", "label": "JSON が壊れている" }
+      ],
+      "default": "few"
+    },
+    {
+      "key": "direction",
+      "label": "方向",
+      "kind": "radio",
+      "options": [
+        { "value": "LR", "label": "左→右 (LR)" },
+        { "value": "TD", "label": "上→下 (TD)" }
+      ],
+      "default": "LR"
+    },
+    { "key": "collapsed", "label": "最初は全て折りたたむ", "about": "ルートだけ開いた状態(+n バッジの確認)", "kind": "switch", "default": false },
+    { "key": "notes", "label": "ノートを表示", "kind": "switch", "default": true },
+    { "key": "shapes", "label": "形を混ぜる(rect / round / stadium)", "kind": "switch", "default": false }
+  ]
+}
